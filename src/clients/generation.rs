@@ -20,7 +20,7 @@ use futures::{StreamExt, TryStreamExt};
 use hyper::HeaderMap;
 use tracing::{debug, instrument};
 
-use super::{BoxStream, Client, Error, NlpClient, TgisClient};
+use super::{BoxStream, Client, Error, NlpClient, TgisClient, NlpClientHttp};
 use crate::{
     health::HealthCheckResult,
     models::{
@@ -47,6 +47,7 @@ pub struct GenerationClient(Option<GenerationClientInner>);
 enum GenerationClientInner {
     Tgis(TgisClient),
     Nlp(NlpClient),
+    NlpHttp(NlpHttpClient),
 }
 
 #[cfg_attr(test, faux::methods)]
@@ -57,6 +58,10 @@ impl GenerationClient {
 
     pub fn nlp(client: NlpClient) -> Self {
         Self(Some(GenerationClientInner::Nlp(client)))
+    }
+
+    pub fn nlp_http(client: NlpClientHttp) -> Self {
+        Self(Some(GenerationClientInner::NlpHttp(client)))
     }
 
     pub fn not_configured() -> Self {
@@ -92,6 +97,20 @@ impl GenerationClient {
                     .tokenization_task_predict(&model_id, request, headers)
                     .await?;
                 debug!(provider = "nlp", ?response, "received tokenize response");
+                let tokens = response
+                    .results
+                    .into_iter()
+                    .map(|token| token.text)
+                    .collect::<Vec<_>>();
+                Ok((response.token_count as u32, tokens))
+            }
+            Some(GenerationClientInner::NlpHttp(client)) => {
+                let request = TokenizationTaskRequest { text };
+                debug!(provider = "nlp-http", ?request, "sending tokenize request");
+                let response = client
+                    .tokenization_task_predict(&model_id, request, headers)
+                    .await?;
+                debug!(provider = "nlp-http", ?response, "received tokenize response");
                 let tokens = response
                     .results
                     .into_iter()
@@ -164,6 +183,46 @@ impl GenerationClient {
                 debug!(provider = "nlp", ?response, "received generate response");
                 Ok(response.into())
             }
+            Some(GenerationClientInner::NlpHttp(client)) => {
+                let request = if let Some(params) = params {
+                    TextGenerationTaskRequest {
+                        text,
+                        max_new_tokens: params.max_new_tokens.map(|v| v as i64),
+                        min_new_tokens: params.min_new_tokens.map(|v| v as i64),
+                        truncate_input_tokens: params.truncate_input_tokens.map(|v| v as i64),
+                        decoding_method: params.decoding_method,
+                        top_k: params.top_k.map(|v| v as i64),
+                        top_p: params.top_p,
+                        typical_p: params.typical_p,
+                        temperature: params.temperature,
+                        repetition_penalty: params.repetition_penalty,
+                        max_time: params.max_time,
+                        exponential_decay_length_penalty: params
+                            .exponential_decay_length_penalty
+                            .map(Into::into),
+                        stop_sequences: params.stop_sequences.unwrap_or_default(),
+                        seed: params.seed.map(|v| v as u64),
+                        preserve_input_text: params.preserve_input_text,
+                        input_tokens: params.input_tokens,
+                        generated_tokens: params.generated_tokens,
+                        token_logprobs: params.token_logprobs,
+                        token_ranks: params.token_ranks,
+                        include_stop_sequence: params.include_stop_sequence,
+                    }
+                } else {
+                    TextGenerationTaskRequest {
+                        text,
+                        ..Default::default()
+                    }
+                }
+                debug!(provider = "nlp-http", ?request, "sending generate request");
+                let response = client
+                    .text_generation_task_predict(&model_id, request, headers)
+                    .await?;
+                debug!(provider = "nlp-http", ?response, "received generate response");
+                Ok(response.into())
+            }
+            };
             None => Err(Error::ModelNotFound { model_id }),
         }
     }
@@ -241,10 +300,53 @@ impl GenerationClient {
                     .boxed();
                 Ok(response_stream)
             }
+            Some(GenerationClientInner::NlpHttp(client)) => {
+`               let request = if let Some(params) = params {
+                    ServerStreamingTextGenerationTaskRequest{
+                        text,
+                        max_new_tokens: params.max_new_tokens.map(|v| v as i64),
+                        min_new_tokens: params.min_new_tokens.map(|v| v as i64),
+                        truncate_input_tokens: params.truncate_input_tokens.map(|v| v as i64),
+                        decoding_method: params.decoding_method,
+                        top_k: params.top_k.map(|v| v as i64),
+                        top_p: params.top_p,
+                        typical_p: params.typical_p,
+                        temperature: params.temperature,
+                        repetition_penalty: params.repetition_penalty,
+                        max_time: params.max_time,
+                        exponential_decay_length_penalty: params
+                            .exponential_decay_length_penalty
+                            .map(Into::into),
+                        stop_sequences: params.stop_sequences.unwrap_or_default(),
+                        seed: params.seed.map(|v| v as u64),
+                        preserve_input_text: params.preserve_input_text,
+                        input_tokens: params.input_tokens,
+                        generated_tokens: params.generated_tokens,
+                        token_logprobs: params.token_logprobs,
+                        token_ranks: params.token_ranks,
+                        include_stop_sequence: params.include_stop_sequence,
+                    }
+                 } else {
+                    ServerStreamingTextGenerationTaskRequest {
+                        text,
+                        ..Default::default()
+                    }
+                 };
+                    debug!(
+                        provider = "nlp-http",
+                        ?request,
+                        "sending generate_stream request"
+                    );
+                    let response_stream = client
+                        .server_streaming_text_generation_task_predict(&model_id, request, headers)
+                        .await?
+                        .map_ok(Into::into)
+                        .boxed();
+                    Ok(response_stream)
+            }
             None => Err(Error::ModelNotFound { model_id }),
         }
     }
-}
 
 #[cfg_attr(test, faux::methods)]
 #[async_trait]
@@ -257,6 +359,7 @@ impl Client for GenerationClient {
         match &self.0 {
             Some(GenerationClientInner::Tgis(client)) => client.health().await,
             Some(GenerationClientInner::Nlp(client)) => client.health().await,
+            Some(GenerationClientInner::NlpHttp(client)) => client.health().await,
             None => unimplemented!(),
         }
     }

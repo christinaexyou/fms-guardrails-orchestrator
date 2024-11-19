@@ -37,7 +37,7 @@ use crate::{
             TextGenerationDetectorClient,
         },
         openai::{ChatCompletionsRequest, OpenAiClient},
-        ClientMap, GenerationClient, NlpClient, TextContentsDetectorClient, TgisClient,
+        ClientMap, GenerationClient, NlpClient, TextContentsDetectorClient, TgisClient, NlpHttpClient
     },
     config::{DetectorType, GenerationProvider, OrchestratorConfig},
     health::HealthCheckCache,
@@ -179,6 +179,11 @@ async fn create_clients(config: &OrchestratorConfig) -> ClientMap {
             GenerationProvider::Nlp => {
                 let nlp_client = NlpClient::new(&generation.service).await;
                 let generation_client = GenerationClient::nlp(nlp_client);
+                clients.insert("generation".to_string(), generation_client);
+            }
+            GenerationProvider::NlpClientHttp => {
+                let nlp_client_http = NlpClientHttp::new(&generation.service).await;
+                let generation_client = GenerationClient::nlp_http(nlp_client_http);
                 clients.insert("generation".to_string(), generation_client);
             }
         }

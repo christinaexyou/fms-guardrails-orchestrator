@@ -94,6 +94,8 @@ pub enum GenerationProvider {
     Tgis,
     #[serde(rename = "nlp")]
     Nlp,
+    #[serde(rename = "nlp-http")]
+    NlpHttp
 }
 
 /// Generation service configuration

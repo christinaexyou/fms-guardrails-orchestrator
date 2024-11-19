@@ -58,6 +58,9 @@ pub use nlp::NlpClient;
 pub mod generation;
 pub use generation::GenerationClient;
 
+pub mod nlp_http;
+pub use nlp_http::NlpClientHttp;
+
 pub mod openai;
 
 const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(60);
